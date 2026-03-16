@@ -12,7 +12,10 @@ import cv2
 import pygame
 import numpy as np
 from a2d_sdk.robot import RobotDds, RobotController, CosineCamera
-
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+import matplotlib
+matplotlib.use('TkAgg')  # 或 'Qt5Agg'
 # ============ 配置 ============
 class Config:
     # 控制参数
@@ -36,9 +39,9 @@ class Config:
     ROBOT_LINK = "arm_base_link"    # 胸部坐标系
     CONTROL_TYPE = "DELTA_POSE"     # 相对位姿模式
     HEAD_INIT_YAW = 0.0
-    HEAD_INIT_PITCH = -15 * 3.14159 / 180  # 低头 15°
-    WAIST_INIT_YAW = 0.0
-    WAIST_INIT_PITCH = -25 * 3.14159 / 180  # 低头 15°
+    HEAD_INIT_PITCH = 15 * 3.1415 / 180   # 低头 15°
+    WAIST_INIT_DIS = -15
+    WAIST_INIT_PITCH = 30 * 3.1415 / 180  # 弯腰 15°
 
 
 # ============ Home位姿回正函数 ============
@@ -71,15 +74,15 @@ def reset_to_home(robot, home_file: str = "home_pose.json", timeout: float = 15.
         robot.move_gripper([35.0, 35.0])  # 完全张开
         time.sleep(0.5)
         
-        # 2. 发送腰部角度 [pitch_rad, height_cm]
-        waist = home.get("waist_joint_states", [0.0, 30.0])
-        print(f"   🦴 腰部: pitch={waist[0]:.3f}rad, height={waist[1]:.1f}cm")
-        robot.move_waist(waist)
-        
-        # 3. 发送头部角度 [yaw, pitch]
-        head = home.get("head_joint_states", [0.0, 0.0])
-        print(f"   🗣️ 头部: yaw={head[0]:.3f}rad, pitch={head[1]:.3f}rad")
-        robot.move_head(head)
+        # # 2. 发送腰部角度 [pitch_rad, height_cm]
+        # waist = home.get("waist_joint_states", [0.0, -25.0])
+        # print(f"   🦴 腰部: pitch={waist[0]:.3f}rad, height={waist[1]:.1f}cm")
+        # robot.move_waist(waist)
+        #
+        # # 3. 发送头部角度 [yaw, pitch]
+        # head = home.get("head_joint_states", [0.0, 0.0])
+        # print(f"   🗣️ 头部: yaw={head[0]:.3f}rad, pitch={head[1]:.3f}rad")
+        # robot.move_head(head)
         
         # 4. 发送手臂关节角度 (14个)
         arm = home.get("arm_joint_states")
@@ -88,7 +91,7 @@ def reset_to_home(robot, home_file: str = "home_pose.json", timeout: float = 15.
             robot.move_arm(arm)
         else:
             print(f"   ⚠️ 手臂关节数据无效: {arm}")
-        
+
         # 5. 发送夹爪角度
         gripper = home.get("gripper_states", [35.0, 35.0])
         print(f"   🤚 夹爪: L={gripper[0]:.1f}mm, R={gripper[1]:.1f}mm")
@@ -184,43 +187,77 @@ class KeyboardController:
         pygame.quit()
 
 # ============ 相机显示器 ============
+# 替换 CameraViewer 类
 class CameraViewer:
     def __init__(self, camera: CosineCamera):
         self.camera = camera
-        for name, title in Config.WINDOW_TITLES.items():
-            cv2.namedWindow(title, cv2.WINDOW_NORMAL)
-            # 按原始比例缩放显示
-            if name == "head":
-                cv2.resizeWindow(title, 640, 360)  # 1280x720 → 1/2
-            else:
-                cv2.resizeWindow(title, 424, 240)   # 848x480 → 1/2
-        print("📷 相机窗口已创建")
-        
+        self.fig, self.axes = plt.subplots(1, 3, figsize=(12, 4))
+        self.fig.canvas.manager.set_window_title("📷 Camera Viewer")
+        self.images = [None] * 3
+        for i, name in enumerate(Config.CAMERA_NAMES):
+            self.axes[i].set_title(Config.WINDOW_TITLES[name])
+            self.axes[i].axis('off')
+            # 创建空白图像占位
+            h, w = (720, 1280) if name == "head" else (480, 848)
+            self.images[i] = self.axes[i].imshow(np.zeros((h, w, 3), dtype=np.uint8))
+        plt.tight_layout()
+        plt.show(block=False)  # 非阻塞显示
+        print("📷 相机窗口已创建 (matplotlib)")
+
     def show_images(self) -> int:
-        """显示三目图像，返回按键"""
-        for name in Config.CAMERA_NAMES:
+        """显示三目图像，返回按键（简化版，只刷新）"""
+        for i, name in enumerate(Config.CAMERA_NAMES):
             img, ts = self.camera.get_latest_image(name)
-            
-            if img is None or img.size == 0:
-                # 黑屏占位
-                h, w = (720, 1280) if name == "head" else (480, 848)
-                img = np.zeros((h, w, 3), dtype=np.uint8)
-                cv2.putText(img, f"Waiting {name}...", (30, h//2), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
-            else:
-                # 添加时间戳和帧率信息
-                cv2.putText(img, f"{name} | {ts//1_000_000}ms", (10, 20),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-            
-            cv2.imshow(Config.WINDOW_TITLES[name], img)
-        
-        # 处理OpenCV事件 (1ms延迟)
-        return cv2.waitKey(1) & 0xFF
-    
+            if img is not None and img.size > 0:
+                # BGR → RGB for matplotlib
+                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if 'cv2' in dir() else img
+                self.images[i].set_data(img_rgb)
+                # 添加时间戳
+                self.axes[i].set_xlabel(f"{ts // 1_000_000}ms", fontsize=8)
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.flush_events()
+        # 简化：不处理按键，用 Ctrl+C 退出
+        return -1
+
     def cleanup(self):
-        for name in Config.CAMERA_NAMES:
-            cv2.destroyWindow(Config.WINDOW_TITLES[name])
-        cv2.destroyAllWindows()
+        plt.close(self.fig)
+# class CameraViewer:
+#     def __init__(self, camera: CosineCamera):
+#         self.camera = camera
+#         for name, title in Config.WINDOW_TITLES.items():
+#             cv2.namedWindow(title, cv2.WINDOW_NORMAL)
+#             # 按原始比例缩放显示
+#             if name == "head":
+#                 cv2.resizeWindow(title, 640, 360)  # 1280x720 → 1/2
+#             else:
+#                 cv2.resizeWindow(title, 424, 240)   # 848x480 → 1/2
+#         print("📷 相机窗口已创建")
+#
+#     def show_images(self) -> int:
+#         """显示三目图像，返回按键"""
+#         for name in Config.CAMERA_NAMES:
+#             img, ts = self.camera.get_latest_image(name)
+#
+#             if img is None or img.size == 0:
+#                 # 黑屏占位
+#                 h, w = (720, 1280) if name == "head" else (480, 848)
+#                 img = np.zeros((h, w, 3), dtype=np.uint8)
+#                 cv2.putText(img, f"Waiting {name}...", (30, h//2),
+#                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
+#             else:
+#                 # 添加时间戳和帧率信息
+#                 cv2.putText(img, f"{name} | {ts//1_000_000}ms", (10, 20),
+#                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+#
+#             cv2.imshow(Config.WINDOW_TITLES[name], img)
+#
+#         # 处理OpenCV事件 (1ms延迟)
+#         return cv2.waitKey(1) & 0xFF
+#
+#     def cleanup(self):
+#         for name in Config.CAMERA_NAMES:
+#             cv2.destroyWindow(Config.WINDOW_TITLES[name])
+#         cv2.destroyAllWindows()
 
 # ============ 主程序 ============
 def main():
@@ -253,9 +290,9 @@ def main():
     # pitch: 俯仰角度，0=水平，正=抬头，负=低头
     # 有效范围: pitch ∈ [-25°, 20°] ≈ [-0.436, 0.349] rad
 
-    # 示例：低头 15° (0.262 rad)
+    # 示例：低头
     robot.move_head([Config.HEAD_INIT_YAW, Config.HEAD_INIT_PITCH])
-    robot.move_waist([Config.WAIST_INIT_YAW, Config.WAIST_INIT_PITCH])
+    robot.move_waist([Config.WAIST_INIT_PITCH,Config.WAIST_INIT_DIS])
     time.sleep(1)  # 等待头部移动完成
     # ===========================================
     # 4. 初始状态
