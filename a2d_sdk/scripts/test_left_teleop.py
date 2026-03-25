@@ -45,7 +45,7 @@ class Config:
 
 
 # ============ Home位姿回正函数 ============
-def reset_to_home(robot, home_file: str = "home_pose.json", timeout: float = 15.0):
+def reset_to_home(robot, home_file: str = "a2d_sdk/home_pose.json", timeout: float = 15.0):
     """
     加载保存的home_pose.json并回正到该位姿
     :param robot: RobotDds 实例
@@ -150,13 +150,13 @@ class KeyboardController:
         should_exit = False
         
         # === 平面移动 (WASD) ===
-        if keys[pygame.K_w]:  # +Y: 向左
+        if keys[pygame.K_w]:
             delta[0] = Config.DELTA_POS
-        if keys[pygame.K_s]:  # -Y: 向右
+        if keys[pygame.K_s]:
             delta[0] = -Config.DELTA_POS
-        if keys[pygame.K_a]:  # -X: 向后
+        if keys[pygame.K_a]:
             delta[1] = Config.DELTA_POS
-        if keys[pygame.K_d]:  # +X: 向前
+        if keys[pygame.K_d]:
             delta[1] = -Config.DELTA_POS
         
         # === 垂直移动 (ZX) ===
