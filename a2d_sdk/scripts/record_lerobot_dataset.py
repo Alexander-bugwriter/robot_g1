@@ -6,6 +6,10 @@
 - 视频编码 (mp4)
 - 追加到现有数据集或创建新数据集
 - 合并多个数据集
+# 合并多个 task 的数据集
+python record_lerobot_dataset.py merge \
+    --inputs "./datasets/g01/pick_cube,./datasets/g01/place_box,./datasets/g01/stack_blocks" \
+    --output all_tasks \
 """
 
 import time
@@ -22,7 +26,7 @@ import shutil
 class Config:
     # 数据集配置
     FPS = 30
-    DATASET_ROOT = "./test_datasets"
+    DATASET_ROOT = "./test_datasets_3"
 
     # 相机配置
     CAMERA_NAMES = ["image", "left_wrist_image", "right_wrist_image"]
@@ -51,13 +55,14 @@ def build_features() -> dict:
             "names": ["channels", "height", "width"],
         }
 
-    # 机器人状态 (14 关节)
+    # 机器人状态 (16 关节)
     features["observation.state"] = {
         "dtype": "float32",
         "shape": [Config.NUM_JOINTS],
         "names": [
             *[f"joint_left_{i}" for i in range(7)],
             *[f"joint_right_{i}" for i in range(7)],
+            "gripper_left","gripper_right",
         ],
     }
 
@@ -292,37 +297,39 @@ def convert_session_to_lerobot(
 
 
 def merge_lerobot_datasets(
-        dataset_paths: list[Path],
-        output_name: str,
+        input_paths: list[Path],  # ✅ 完整路径列表
+        output_path: Path,  # ✅ 完整输出路径
 ) -> bool:
     """
     合并多个已存在的 LeRobot 数据集到一个大合集
-    保留每个 episode 的原始 task 描述字符串
 
     Args:
-        dataset_paths: LeRobot 数据集路径列表
-        output_name: 输出数据集名称
-
-    Returns:
-        bool: 是否成功
+        input_paths: 输入数据集的完整路径列表
+        output_path: 输出数据集的完整路径
     """
     print("=" * 60)
     print("🤖 LeRobot 数据集合并工具")
     print("=" * 60)
-    print(f"📂 输入数据集：{len(dataset_paths)} 个")
-    for p in dataset_paths:
-        print(f"   - {p}")
-    print(f"📁 输出数据集：{output_name}")
+    print(f"📂 输入数据集：{len(input_paths)} 个")
+    for p in input_paths:
+        print(f"   - {p.resolve()}")  # 显示绝对路径
+    print(f"📁 输出数据集：{output_path.resolve()}")
     print("=" * 60)
 
-    if len(dataset_paths) == 0:
+    if len(input_paths) == 0:
         print("⚠️  没有可合并的数据集")
         return False
 
-    output_path = Path(Config.DATASET_ROOT) / output_name
-    output_repo_id = f"g01/{output_name.replace(' ', '_')}"
+    # ✅ 检查输入数据集是否存在
+    for p in input_paths:
+        if not p.exists():
+            print(f"❌ 输入数据集不存在：{p}")
+            return False
+        if not (p / "meta" / "info.json").exists():
+            print(f"❌ 不是有效的 LeRobot 数据集（缺少 meta/info.json）: {p}")
+            return False
 
-    # 检查输出目录是否已存在
+    # ✅ 检查输出目录是否已存在
     if output_path.exists():
         print(f"⚠️  输出目录已存在：{output_path}")
         response = input("是否覆盖？(y/n): ")
@@ -331,24 +338,24 @@ def merge_lerobot_datasets(
             return False
         shutil.rmtree(output_path)
 
+    # ✅ 创建输出目录的父目录
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     try:
         # 1. 收集所有唯一的 task 描述
         all_tasks = {}  # task_prompt -> task_index
         task_index_counter = 0
-
         datasets_info = []
         total_frames = 0
         total_episodes = 0
 
-        for i, ds_path in enumerate(dataset_paths):
-            if not ds_path.exists():
-                print(f"⚠️  数据集不存在，跳过：{ds_path}")
-                continue
+        for i, input_path in enumerate(input_paths):
+            print(f"\n📂 加载数据集 {i + 1}/{len(input_paths)}: {input_path.name}")
 
-            print(f"\n📂 加载数据集 {i + 1}/{len(dataset_paths)}: {ds_path.name}")
+            # ✅ 关键修改：root 是数据集的父目录，repo_id 是数据集名称
             ds = LeRobotDataset(
-                ds_path.name,
-                root=Config.DATASET_ROOT,
+                input_path.name,  # repo_id = 数据集目录名
+                root=str(input_path),  # root = 父目录
                 download_videos=True,
             )
 
@@ -364,9 +371,9 @@ def merge_lerobot_datasets(
 
             datasets_info.append({
                 "dataset": ds,
-                "episodes": ds.meta.episodes,  # {ep_index: {episode_index, tasks, length}}
+                "episodes": ds.meta.episodes,
+                "input_path": input_path,  # 保存原始路径
             })
-
             total_frames += ds.num_frames
             total_episodes += ds.num_episodes
             print(f"   Episodes: {ds.num_episodes}, Frames: {ds.num_frames}")
@@ -382,11 +389,13 @@ def merge_lerobot_datasets(
         # 2. 创建输出数据集
         print(f"\n🆕 创建输出数据集：{output_path}")
         features = build_features()
+
+        # ✅ 关键修改：root 是输出路径的父目录，repo_id 是输出目录名
         output_dataset = LeRobotDataset.create(
-            repo_id=output_repo_id,
+            repo_id=output_path.name,  # repo_id = 输出目录名
             fps=Config.FPS,
             features=features,
-            root=Config.DATASET_ROOT,
+            root=str(output_path),  # root = 父目录
             robot_type="custom_g01_bimanual",
             use_videos=Config.USE_VIDEOS,
             image_writer_processes=Config.IMAGE_WRITER_PROCESSES,
@@ -397,61 +406,70 @@ def merge_lerobot_datasets(
             num_processes=Config.IMAGE_WRITER_PROCESSES,
             num_threads=Config.IMAGE_WRITER_THREADS,
         )
-
         video_manager = VideoEncodingManager(output_dataset)
         video_manager.__enter__()
 
-        # 3. 手动写入 tasks.jsonl（使用收集到的所有唯一 task）
-        from lerobot.datasets.utils import write_json, TASKS_PATH
+        # 3. 手动写入 tasks.jsonl
+        # 3. 手动写入 tasks.jsonl（使用正确的 jsonlines 格式）
+        from lerobot.datasets.utils import write_jsonlines, TASKS_PATH  # ✅ 改用 write_jsonlines
+
         tasks_list = [
             {"task_index": idx, "task": prompt}
             for prompt, idx in sorted(all_tasks.items(), key=lambda x: x[1])
         ]
-        write_json(tasks_list, output_path / TASKS_PATH)
+        write_jsonlines(tasks_list, output_path / TASKS_PATH)  # ✅ 正确格式
+        # from lerobot.datasets.utils import write_json, TASKS_PATH
+        # tasks_list = [
+        #     {"task_index": idx, "task": prompt}
+        #     for prompt, idx in sorted(all_tasks.items(), key=lambda x: x[1])
+        # ]
+        # write_json(tasks_list, output_path / TASKS_PATH)
 
-        # 4. 复制所有 episode（保留原始 task 描述字符串）
+        # 4. 复制所有 episode
         print(f"\n📋 开始合并 {total_episodes} 个 episodes...")
         episode_count = 0
-
         for ds_info in datasets_info:
             ds = ds_info["dataset"]
             episodes = ds_info["episodes"]
-
             for local_ep_idx in range(ds.num_episodes):
                 print(f"   处理 episode {episode_count + 1}/{total_episodes}", end="\r")
 
-                # 获取该 episode 的 task 信息（任务描述字符串列表）
                 ep_meta = episodes.get(local_ep_idx, {})
-                ep_tasks = ep_meta.get("tasks", [])  # 这是任务描述字符串列表！
+                ep_tasks = ep_meta.get("tasks", [])
 
-                # 获取该 episode 的所有帧
+                # ✅ 关键修复：获取该 episode 的所有帧索引
                 ep_frames = []
                 for frame_idx in range(ds.num_frames):
-                    item = ds.hf_dataset[frame_idx]
+                    # ✅ 使用 __getitem__ 而不是 hf_dataset
+                    item = ds[frame_idx]
                     if item["episode_index"].item() == local_ep_idx:
                         ep_frames.append(frame_idx)
 
                 if len(ep_frames) == 0:
                     continue
 
-                # 逐帧添加到输出数据集（使用原始 task 描述字符串）
+                # 逐帧添加到输出数据集
                 for frame_idx in ep_frames:
-                    item = ds.hf_dataset[frame_idx]
-                    frame = {}
+                    # ✅ 使用 __getitem__ 获取完整解码的帧
+                    item = ds[frame_idx]
 
-                    # 复制所有特征
+                    frame = {}
+                    # ✅ 复制所有特征（包括视频解码后的图像）
                     for key in features.keys():
                         if key in item:
                             val = item[key]
+                            # ✅ torch tensor → numpy
                             if hasattr(val, 'numpy'):
                                 val = val.numpy()
+                            # ✅ 确保图像是 uint8 格式 (H, W, C) 或 (C, H, W)
+                            if key.startswith("observation.images."):
+                                if val.dtype == np.float32:
+                                    val = (val * 255).astype(np.uint8)
                             frame[key] = val
 
-                    # 使用原始 task 描述字符串（第一个 task）
                     task_prompt = ep_tasks[0] if ep_tasks else "Unknown"
                     output_dataset.add_frame(frame, task=task_prompt)
 
-                # 保存该 episode
                 output_dataset.save_episode()
                 episode_count += 1
 
@@ -460,25 +478,11 @@ def merge_lerobot_datasets(
         output_dataset.stop_image_writer()
 
         # 6. 验证合并后的 meta
-        print(f"\n\n✅ 合并完成！")
+        print(f"\n✅ 合并完成！")
         print(f"📁 输出位置：{output_path}")
         print(f"📊 总 episodes: {output_dataset.num_episodes}")
         print(f"📊 总 frames: {output_dataset.num_frames}")
         print(f"📊 总 tasks: {output_dataset.meta.total_tasks}")
-
-        # 验证 episodes.jsonl 格式
-        print(f"\n📋 episodes.jsonl 示例:")
-        with open(output_path / "meta" / "episodes.jsonl") as f:
-            for i, line in enumerate(f):
-                if i < 3:
-                    print(f"   {line.strip()}")
-
-        # 验证 tasks.jsonl 格式
-        print(f"\n📋 tasks.jsonl 示例:")
-        with open(output_path / "meta" / "tasks.jsonl") as f:
-            for i, line in enumerate(f):
-                if i < 3:
-                    print(f"   {line.strip()}")
 
         return True
 
@@ -505,8 +509,9 @@ def main():
     # merge 命令
     merge_parser = subparsers.add_parser("merge", help="合并多个 LeRobot 数据集")
     merge_parser.add_argument("--inputs", type=str, required=True, help="输入数据集路径 (逗号分隔)")
-    merge_parser.add_argument("--output", type=str, required=True, help="输出数据集名称")
-    merge_parser.add_argument("--prompt", type=str, default="Merged dataset", help="任务描述")
+    merge_parser.add_argument("--output", type=str, required=True,
+                              help="输出数据集完整路径，如：./test_datasets_all")
+
 
     args = parser.parse_args()
 
@@ -517,11 +522,17 @@ def main():
             task_prompt=args.task_prompt,
         )
     elif args.command == "merge":
-        input_paths = [Path(p.strip()) for p in args.inputs.split(",")]
+        # ✅ 直接使用用户输入的路径，不依赖 DATASET_ROOT
+        input_paths = [Path(p.strip()).resolve() for p in args.inputs.split(",")]
+        output_path = Path(args.output).resolve()
+
+        print(f"\n📁 使用路径配置:")
+        print(f"   输入：{input_paths}")
+        print(f"   输出：{output_path}")
+
         success = merge_lerobot_datasets(
-            dataset_paths=input_paths,
-            output_name=args.output,
-            output_prompt=args.prompt,
+            input_paths=input_paths,
+            output_path=output_path,
         )
     else:
         parser.print_help()

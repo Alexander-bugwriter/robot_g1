@@ -27,7 +27,7 @@ class Config:
     TASK_NAME = "dummy_test"
     TASK_PROMPT = "Dummy data for testing LeRobot dataset writing"
 
-    DUMMY_FRAMES = 10  # 每次生成 10 帧
+    DUMMY_FRAMES = 15  # 每次生成 10 帧
 
 
 class KeyboardController:
