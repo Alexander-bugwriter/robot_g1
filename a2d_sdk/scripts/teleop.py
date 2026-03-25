@@ -20,7 +20,7 @@ matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import cv2
 import numpy as np
-
+from record_lerobot_dataset import convert_session_to_lerobot
 
 class Config:
     DELTA_POS = 0.015
@@ -42,8 +42,10 @@ class Config:
     TRAJECTORY_TIME = 0.5
 
     DATA_ROOT = "./teleop_data"
+    TASK_NAME = "pick_place"
+    TASK_PROMPT = "Pick up something and place it in the bowl"
 
-    NUM_JOINTS = 14
+    NUM_JOINTS = 16
     ACTION_DIM = 14
 
 def reset_to_home(robot, controller, home_file="home_pose.json", timeout=15.0):
@@ -191,10 +193,13 @@ class KeyboardController:
             has_action = True
         if keys[pygame.K_q]:
             new_left_gripper = min(Config.GRIPPER_MAX, left_gripper + Config.DELTA_GRIPPER)
+            left_action[6] = new_left_gripper
             has_action = True
         if keys[pygame.K_e]:
             new_left_gripper = max(Config.GRIPPER_MIN, left_gripper - Config.DELTA_GRIPPER)
+            left_action[6] = new_left_gripper
             has_action = True
+
 
         if keys[pygame.K_i]:
             right_action[0] = Config.DELTA_POS
@@ -216,9 +221,11 @@ class KeyboardController:
             has_action = True
         if keys[pygame.K_u]:
             new_right_gripper = min(Config.GRIPPER_MAX, right_gripper + Config.DELTA_GRIPPER)
+            right_action[6] = new_right_gripper
             has_action = True
         if keys[pygame.K_o]:
             new_right_gripper = max(Config.GRIPPER_MIN, right_gripper - Config.DELTA_GRIPPER)
+            right_action[6] = new_right_gripper
             has_action = True
 
         if keys[pygame.K_r]:
@@ -288,16 +295,15 @@ class DataCollector:
         self.start_time = time.time()
         print(f"✅ 开始新采集 Session: {self.session_id}")
 
-    def add_frame(self, images, arm_states, gripper_states, action):
+    def add_frame(self, images, states,  action):
         if not self.is_collecting:
             return
         frame_data = {
             "timestamp": time.time(),
             "frame_index": len(self.frame_buffer),
             "images": {k: v.copy() for k, v in images.items()},
-            "arm_states": arm_states.copy() if arm_states else [0.0] * 14,
-            "gripper_states": gripper_states.copy() if gripper_states else [0.0, 0.0],
-            "action": action.copy(),
+            "states": list(states) ,# ✅ 用 list() 转换
+            "action": list(action),  # ✅ 用 list() 转换
         }
         self.frame_buffer.append(frame_data)
         print(f"📝 采集帧：{len(self.frame_buffer)}", end="\r")
@@ -308,8 +314,9 @@ class DataCollector:
             return None
         save_dir = Path(Config.DATA_ROOT) / f"session_{self.session_id}"
         save_dir.mkdir(parents=True, exist_ok=True)
-        save_path = save_dir / "frames.npy"
-        np.save(save_path, self.frame_buffer, allow_pickle=True)
+        # 修改为 .npz 格式
+        save_path = save_dir / "frames.npz"
+        np.savez(save_path, frames=self.frame_buffer)
         print(f"\n💾 已保存 {len(self.frame_buffer)} 帧到 {save_path}")
         self.is_collecting = False
         self.frame_buffer = []
@@ -370,7 +377,13 @@ def main():
                 continue
 
             if should_save:
-                collector.save_session()
+                save_path = collector.save_session()  # 保存为 npz
+                if save_path:
+                    convert_session_to_lerobot(
+                        npz_path=save_path,
+                        task_name=Config.TASK_NAME,  # 硬编码在 config 里
+                        task_prompt=Config.TASK_PROMPT,  # 硬编码在 config 里
+                    )
                 time.sleep(1)
                 continue
 
@@ -400,12 +413,20 @@ def main():
                 gripper_states, gripper_ts = robot.gripper_states()
 
                 action_14d = left_action + right_action
+                print("left_action:",left_action)
+                print("right_action:",right_action)
+                print("action_14d:",action_14d)
+                print("gripper_states:",gripper_states)
+                print("arm_states:",arm_states)
+                print("left_gripper:",left_gripper)
+                print("right_gripper:",right_gripper)
+                total_states=list(arm_states) + gripper_states
+                print("total_states:",total_states)
 
                 if collector.is_collecting and images:
                     collector.add_frame(
                         images=images,
-                        arm_states=arm_states if arm_states else [0.0] * 14,
-                        gripper_states=gripper_states if gripper_states else [left_gripper, right_gripper],
+                        states=total_states ,
                         action=action_14d,
                     )
 
